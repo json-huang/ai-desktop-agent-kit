@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+*.log
+lightrag_data/
+lightrag_inputs/
+models/grounding/
+models/local/
+.DS_Store

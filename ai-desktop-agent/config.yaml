@@ -1,0 +1,115 @@
+# AI Desktop Agent Configuration
+# ================================
+
+# LLM Provider Configuration
+llm:
+  # Main reasoning model (used by orchestrator)
+  # Options: deepseek, openai, anthropic, mimo, custom
+  provider: "deepseek"
+
+  # Provider-specific settings
+  providers:
+    deepseek:
+      base_url: "https://api.deepseek.com"
+      model: "deepseek-chat"          # or deepseek-reasoner
+      api_key_env: "DEEPSEEK_API_KEY"
+
+    openai:
+      base_url: "https://api.openai.com/v1"
+      model: "gpt-4o"
+      api_key_env: "OPENAI_API_KEY"
+
+    anthropic:
+      model: "claude-sonnet-4-20250514"
+      api_key_env: "ANTHROPIC_API_KEY"
+
+    mimo:
+      # Run MiMo locally with vLLM or Ollama
+      base_url: "http://localhost:11434/v1"  # Ollama default
+      model: "MiMo-7B"
+      api_key_env: "MIMO_API_KEY"            # optional for local
+
+    custom:
+      base_url: ""                    # Your custom OpenAI-compatible endpoint
+      model: ""
+      api_key_env: "CUSTOM_API_KEY"
+
+# Agent-S Vision Configuration
+vision:
+  # Grounding model (for UI element detection)
+  grounding:
+    provider: "huggingface"           # huggingface, vllm, openrouter
+    model: "ui-tars-1.5-7b"          # recommended grounding model
+    base_url: "http://localhost:8080"  # local inference server
+    width: 1920
+    height: 1080
+
+  # Screen capture settings
+  screen:
+    display: 0                        # monitor index
+    format: "png"
+    quality: 95
+
+  # Agent-S agent settings
+  agent:
+    max_trajectory_length: 8
+    enable_reflection: true
+    platform: "windows"
+
+# AutoHotkey Executor Configuration
+executor:
+  # AHK executable path
+  ahk_path: "C:/Program Files/AutoHotkey/v2/AutoHotkey64.exe"
+
+  # Communication method: http, pipe, subprocess
+  method: "http"
+
+  # HTTP server settings (if method=http)
+  http:
+    host: "127.0.0.1"
+    port: 18600
+
+  # Named pipe settings (if method=pipe)
+  pipe:
+    name: "ai-desktop-agent-ahk"
+
+# MCP Server Configuration
+mcp:
+  name: "ai-desktop-agent"
+  version: "0.1.0"
+
+  # Tools to expose
+  tools:
+    - see_screen
+    - locate_element
+    - click
+    - double_click
+    - right_click
+    - type_text
+    - press_keys
+    - open_app
+    - close_app
+    - manage_window
+    - file_operation
+    - run_command
+    - clipboard_get
+    - clipboard_set
+    - verify_action
+    - execute_plan
+
+# REST API Configuration (optional)
+api:
+  host: "0.0.0.0"
+  port: 8900
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/agent.log"
+  max_size_mb: 10
+
+# Models storage
+models:
+  dir: "D:/ai-desktop-agent/models"
+  grounding_dir: "D:/ai-desktop-agent/models/grounding"
+  local_dir: "D:/ai-desktop-agent/models/local"

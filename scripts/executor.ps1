@@ -3,19 +3,19 @@
 # Enforces: verification gating, retry caps, strategy variation, loop detection, timeouts.
 #
 # Usage (standalone):
-#   .\executor.ps1 -DagPath "dag.json" -OutputDir "C:\task_results"
+#   .\executor.ps1 -execDagPath "dag.json" -execOutputDir "C:\task_results"
 #
 # Usage (with planner — auto-generate DAG):
-#   .\executor.ps1 -Goal "open Notepad and type Hello World" -OutputDir "C:\task_results"
+#   .\executor.ps1 -execGoal "open Notepad and type Hello World" -execOutputDir "C:\task_results"
 
 param(
-    [string]$DagPath = "",                    # Path to pre-built DAG JSON (if Goal not specified)
-    [string]$Goal = "",                       # Natural language goal (auto-plans via planner.ps1)
-    [string]$ApplicationHint = "",            # Hint for planner (e.g., "Notepad", "Paint")
-    [string]$OutputDir = "$env:USERPROFILE\Desktop\agent_output",
-    [int]$MaxRetriesPerStep = 3,
-    [int]$StepTimeoutSeconds = 30,
-    [switch]$DryRun                          # Simulate execution (no real clicks/keys)
+    [string]$execDagPath = "",                # Path to pre-built DAG JSON (if Goal not specified)
+    [string]$execGoal = "",                   # Natural language goal (auto-plans via planner.ps1)
+    [string]$execApplicationHint = "",        # Hint for planner (e.g., "Notepad", "Paint")
+    [string]$execOutputDir = "$env:USERPROFILE\Desktop\agent_output",
+    [int]$execMaxRetries = 3,
+    [int]$execStepTimeout = 30,
+    [switch]$execDryRun                      # Simulate execution (no real clicks/keys)
 )
 
 # =============================================================================
@@ -745,9 +745,9 @@ function Invoke-ExecutorLoop {
 # SCRIPT BODY: When invoked directly (not dot-sourced)
 # =============================================================================
 if ($MyInvocation.InvocationName -ne '.') {
-    $result = Invoke-ExecutorLoop -DagPath $DagPath -Goal $Goal -ApplicationHint $ApplicationHint `
-        -OutputDir $OutputDir -MaxRetriesPerStep $MaxRetriesPerStep `
-        -StepTimeoutSeconds $StepTimeoutSeconds -DryRun:$DryRun
+    $result = Invoke-ExecutorLoop -DagPath $execDagPath -Goal $execGoal -ApplicationHint $execApplicationHint `
+        -OutputDir $execOutputDir -MaxRetriesPerStep $execMaxRetries `
+        -StepTimeoutSeconds $execStepTimeout -DryRun:$execDryRun
 
     if ($result.task_completed) {
         Write-Output "EXECUTOR_COMPLETE|$($result.steps_completed)/$($result.steps_total) steps|task_id=$($result.task_id)"

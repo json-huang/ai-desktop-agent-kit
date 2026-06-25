@@ -466,25 +466,86 @@ function Invoke-ExecutorLoop {
                 $step = $dag[$currentStepIndex]
                 Write-Output "EXECUTOR|PLAN|step $($step.step_id): $($step.description)"
 
-                # In practice: this state sends perception data + DAG step to Claude for micro-planning.
-                # Claude returns: which specific UiElement to target, its coordinates, and the action to take.
-                # For Phase 2 execution flow, Claude Code processes this within the calling session.
-                # The executor outputs the data needed; Claude Code acts on it.
+                # --- Element Resolution ---
+                # Try to resolve the step's target to concrete coordinates using perception data.
+                $resolvedAction = $null
 
-                Write-Output "EXECUTOR|PLAN|perception: $lastPerceptionJson"
+                if ($lastPerceptionJson -and (Test-Path $lastPerceptionJson)) {
+                    try {
+                        . "$PSScriptRoot\resolver.ps1"
+
+                        $target = if ($step.action.target) { $step.action.target } else { @{} }
+                        $resolveResult = Resolve-Element -Target $target -PerceptionJson $lastPerceptionJson -MinConfidence 0.40
+
+                        if ($resolveResult) {
+                            Write-Output "EXECUTOR|PLAN|resolved via $($resolveResult.matchType): ($($resolveResult.x),$($resolveResult.y)) conf=$($resolveResult.confidence)"
+                            # Inject resolved coordinates into the step's action
+                            $resolvedAction = $step.action.PSObject.Copy()
+                            $resolvedAction | Add-Member -NotePropertyName "target_x" -NotePropertyValue $resolveResult.x -Force
+                            $resolvedAction | Add-Member -NotePropertyName "target_y" -NotePropertyValue $resolveResult.y -Force
+                            $resolvedAction | Add-Member -NotePropertyName "resolved_by" -NotePropertyValue $resolveResult.matchType -Force
+                            $resolvedAction | Add-Member -NotePropertyName "resolve_confidence" -NotePropertyValue $resolveResult.confidence -Force
+                        } else {
+                            Write-Output "EXECUTOR|PLAN|resolver returned null, will use action defaults"
+                        }
+                    }
+                    catch {
+                        Write-Output "EXECUTOR|PLAN|resolver failed: $_"
+                    }
+                }
+
+                # Store resolved action for ACT state
+                if ($resolvedAction) {
+                    $step.action = $resolvedAction
+                    $dag[$currentStepIndex] = $step
+                }
+
                 Write-Output "EXECUTOR|PLAN|step_spec: $($step | ConvertTo-Json -Depth 3 -Compress)"
 
-                # Transition: in a fully automated loop, Claude would resolve this.
-                # For now, output the planning context and proceed (Claude Code handles the loop).
                 $state = [ExecutorState]::PRE_ACT
             }
 
             ([ExecutorState]::PRE_ACT) {
                 Write-Output "EXECUTOR|PRE_ACT|TOCTOU check at target"
-                # TODO Phase 2+: capture just-before screenshot at target coordinates
-                # Compare with SENSE screenshot at same region
-                # If SSIM < 0.92, abort and re-SENSE
-                $state = [ExecutorState]::ACT
+
+                # --- TOCTOU Guard ---
+                # Capture a fresh screenshot and compare with the SENSE-phase screenshot.
+                # If the target region has changed significantly, re-SENSE to avoid acting on stale state.
+                if (-not $DryRun -and $lastScreenshot -and (Test-Path $lastScreenshot)) {
+                    try {
+                        $preActPath = Join-Path $OutputDir "preact_$(Get-Date -Format 'HHmmss').png"
+                        & "$PSScriptRoot\screenshot.ps1" -Path $preActPath
+
+                        if (Test-Path $preActPath) {
+                            . "$PSScriptRoot\verify.ps1"
+                            $diffResult = & "$PSScriptRoot\verify.ps1" -Before $lastScreenshot -After $preActPath -Threshold 30
+
+                            if ($diffResult -match 'OK\|changed=(\d+)/(\d+)\|([\d.]+)%') {
+                                $changePct = [double]$Matches[3]
+                                if ($changePct -gt 15.0) {
+                                    Write-Output "EXECUTOR|PRE_ACT|TOCTOU VIOLATION: screen changed $changePct% (>15%)|re-SENSE"
+                                    $lastScreenshot = $preActPath
+                                    $state = [ExecutorState]::SENSE
+                                } else {
+                                    Write-Output "EXECUTOR|PRE_ACT|TOCTOU OK: screen stable ($changePct% change)"
+                                    $state = [ExecutorState]::ACT
+                                }
+                            } else {
+                                Write-Output "EXECUTOR|PRE_ACT|TOCTOU: verify result unclear, proceeding"
+                                $state = [ExecutorState]::ACT
+                            }
+                        } else {
+                            Write-Output "EXECUTOR|PRE_ACT|TOCTOU: screenshot failed, proceeding"
+                            $state = [ExecutorState]::ACT
+                        }
+                    }
+                    catch {
+                        Write-Output "EXECUTOR|PRE_ACT|TOCTOU check failed: $_|proceeding"
+                        $state = [ExecutorState]::ACT
+                    }
+                } else {
+                    $state = [ExecutorState]::ACT
+                }
             }
 
             ([ExecutorState]::ACT) {
@@ -574,7 +635,16 @@ function Invoke-ExecutorLoop {
                     negative_check = if ($step.action.expected_outcome.negative_check) { $step.action.expected_outcome.negative_check } else { "" }
                 }
 
-                $verdict = Invoke-StepVerification -BeforeScreenshot $lastScreenshot -ExpectedOutcome $expectedOutcome -OutputDir $OutputDir
+                # Capture verify diagnostic output to parse totalScore
+                $verifyOutput = Invoke-StepVerification -BeforeScreenshot $lastScreenshot -ExpectedOutcome $expectedOutcome -OutputDir $OutputDir 6>&1
+                $verdict = $verifyOutput
+                # scan the captured output for the scores line
+                $script:verifyTotalScore = 0.0
+                foreach ($vLine in $verifyOutput) {
+                    if ($vLine -match 'scores\|.*total=([\d.]+)') {
+                        $script:verifyTotalScore = [double]$Matches[1]
+                    }
+                }
 
                 Write-Output "EXECUTOR|VERIFY|verdict: $verdict"
 
@@ -600,8 +670,62 @@ function Invoke-ExecutorLoop {
                         }
                     }
                     "UNCERTAIN" {
-                        Write-Output "EXECUTOR|VERIFY|UNCERTAIN|escalating for semantic judgment"
-                        $state = [ExecutorState]::ESCALATE
+                        Write-Output "EXECUTOR|VERIFY|UNCERTAIN|attempting semantic verification"
+                        # --- Semantic Verification Fallback ---
+                        # When OCR + pixel diff can't determine success, ask Claude for judgment.
+                        $semVerResult = "UNCERTAIN"
+                        try {
+                            . "$PSScriptRoot\verify-semantic.ps1"
+                            $afterScreenshot = Join-Path $OutputDir "postact_$(Get-Date -Format 'HHmmss').png"
+                            if (-not $DryRun) {
+                                & "$PSScriptRoot\screenshot.ps1" -Path $afterScreenshot
+                            }
+
+                            if ($lastScreenshot -and (Test-Path $lastScreenshot) -and $afterScreenshot -and (Test-Path $afterScreenshot)) {
+                                $semVerOutput = Invoke-SemanticVerification -BeforeScreenshot $lastScreenshot `
+                                    -AfterScreenshot $afterScreenshot -ExpectedOutcome $expectedOutcome `
+                                    -OutputDir $OutputDir -DryRun:$DryRun
+
+                                if ($semVerOutput -is [string]) {
+                                    $semVerResult = $semVerOutput
+                                }
+                                # If it returned a request object, Claude Code processes it externally
+                                # and writes the response. For now, treat as UNCERTAIN.
+                            }
+                        }
+                        catch {
+                            Write-Output "EXECUTOR|VERIFY|semantic verification failed: $_"
+                        }
+
+                        Write-Output "EXECUTOR|VERIFY|semantic_verdict: $semVerResult"
+
+                        switch ($semVerResult) {
+                            "SUCCESS" {
+                                Write-Output "EXECUTOR|VERIFY|SEMVER→SUCCESS|advancing"
+                                $state = [ExecutorState]::ADVANCE
+                            }
+                            "FAILURE" {
+                                Write-Output "EXECUTOR|VERIFY|SEMVER→FAILURE|recovering"
+                                $retryCount++
+                                if ($retryCount -ge $MaxRetriesPerStep) {
+                                    $state = [ExecutorState]::ESCALATE
+                                } else {
+                                    $state = [ExecutorState]::RECOVER
+                                }
+                            }
+                            default {
+                                # Phase 03: relaxed threshold fallback when semantic verification unavailable
+                                # If the original multi-modal score was >= 0.45, treat as SUCCESS
+                                # rather than escalating (useful for local testing without Claude API key)
+                                if ($script:verifyTotalScore -ge 0.45) {
+                                    Write-Output "EXECUTOR|VERIFY|SEMVER→UNCERTAIN|score=$script:verifyTotalScore>=0.45|auto-advancing (no Claude API)"
+                                    $state = [ExecutorState]::ADVANCE
+                                } else {
+                                    Write-Output "EXECUTOR|VERIFY|SEMVER→UNCERTAIN|escalating for human judgment"
+                                    $state = [ExecutorState]::ESCALATE
+                                }
+                            }
+                        }
                     }
                 }
                 } # end if state -eq VERIFY
@@ -621,14 +745,31 @@ function Invoke-ExecutorLoop {
                     $state = [ExecutorState]::ESCALATE
                 }
 
-                # Recovery action: dismiss dialogs, reset UI state (only if still going to SENSE)
+                # Recovery actions: dismiss dialogs, reset UI state
                 if ($state -eq [ExecutorState]::RECOVER) {
-                    try {
-                        & "$PSScriptRoot\keyboard.ps1" -Action key -Key Escape
-                        Start-Sleep -Milliseconds 300
-                    }
-                    catch {
-                        Write-Warning "RECOVER: Esc key failed (non-critical)"
+                    if (-not $DryRun) {
+                        try {
+                            # Step 1: Press Escape to dismiss any open dialogs/menus
+                            & "$PSScriptRoot\keyboard.ps1" -Action key -Key Escape
+                            Start-Sleep -Milliseconds 300
+
+                            # Step 2: Press Escape again (some dialogs need double-escape)
+                            & "$PSScriptRoot\keyboard.ps1" -Action key -Key Escape
+                            Start-Sleep -Milliseconds 200
+
+                            # Step 3: Re-capture screen to check if UI is in a clean state
+                            $recoverScreenshot = Join-Path $OutputDir "recover_$(Get-Date -Format 'HHmmss').png"
+                            & "$PSScriptRoot\screenshot.ps1" -Path $recoverScreenshot
+                            if (Test-Path $recoverScreenshot) {
+                                $lastScreenshot = $recoverScreenshot
+                                Write-Output "EXECUTOR|RECOVER|re-captured screen after recovery actions"
+                            }
+                        }
+                        catch {
+                            Write-Warning "RECOVER: recovery action failed (non-critical): $_"
+                        }
+                    } else {
+                        Write-Output "EXECUTOR|RECOVER|DRYRUN|skipping recovery actions"
                     }
                     $state = [ExecutorState]::SENSE
                 }

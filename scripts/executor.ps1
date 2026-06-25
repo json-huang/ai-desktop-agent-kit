@@ -184,7 +184,7 @@ function Save-Checkpoint {
         [string]$OutputDir
     )
 
-    # Convert hashtables to PSCustomObject for JSON serialization (PS 5.1 compat)
+# Convert hashtables to PSCustomObject for JSON serialization (PS 5.1 compat)
     $stepStatesObj = [PSCustomObject]@{}
     if ($StepStates -is [hashtable] -or $StepStates -is [System.Collections.IDictionary]) {
         foreach ($key in $StepStates.Keys) {
@@ -221,7 +221,16 @@ function Save-Checkpoint {
     }
 
     $checkpointPath = Join-Path $OutputDir "checkpoint.json"
-    $checkpoint | ConvertTo-Json -Depth 5 | Out-File -FilePath $checkpointPath -Encoding UTF8
+    try {
+        $checkpoint | ConvertTo-Json -Depth 5 | Out-File -FilePath $checkpointPath -Encoding UTF8
+        Write-Host "CHECKPOINT_SAVED|$checkpointPath"
+    } catch {
+        Write-Host "CHECKPOINT_FAILED|$checkpointPath|$_"
+        # Fallback: try Desktop
+        $fallbackPath = Join-Path $env:USERPROFILE "Desktop\checkpoint.json"
+        $checkpoint | ConvertTo-Json -Depth 5 | Out-File -FilePath $fallbackPath -Encoding UTF8
+        Write-Host "CHECKPOINT_FALLBACK|$fallbackPath"
+    }
     return $checkpointPath
 }
 
@@ -286,7 +295,7 @@ function Invoke-ExecutorLoop {
         exit 3
     }
 
-    # ---- Check for existing checkpoint (resume capability) ----
+# ---- Check for existing checkpoint (resume capability) ----
     $checkpointPath = Join-Path $OutputDir "checkpoint.json"
     if (Test-Path $checkpointPath) {
         try {
@@ -876,7 +885,7 @@ function Invoke-ExecutorLoop {
         goal             = $Goal
         timestamp        = Get-Date -Format 'o'
     }
-    $finalState | ConvertTo-Json -Depth 3 | Out-File "$OutputDir\task_result.json" -Encoding UTF8
+    $finalState | ConvertTo-Json -Depth 3 | Out-File (Join-Path $OutputDir "task_result.json") -Encoding UTF8
     Write-Output "EXECUTOR|RESULT|$($finalState | ConvertTo-Json -Compress)"
 
     return $finalState

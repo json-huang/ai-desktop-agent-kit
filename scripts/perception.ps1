@@ -28,7 +28,7 @@ param(
     [switch]$SkipTemplate,             # DEBUG: skip template matching tier
     [switch]$SkipVision,               # DEBUG: skip vision tier (default off = skip)
     [switch]$ForceVision,              # Force vision tier even if not needed
-    [string]$OutputDir = "$env:USERPROFILE\Desktop",  # Output directory for JSON and PNG
+    [string]$PercOutputDir = "$env:USERPROFILE\Desktop",  # Output directory for JSON and PNG (renamed to avoid collision when dot-sourced)
     [string]$TemplateDir = "",         # Directory of template images for template matching
     [switch]$NoAnnotate               # Skip annotated PNG generation
 )
@@ -467,7 +467,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $output = Invoke-PerceptionPipeline -WindowTitle $WindowTitle `
         -SkipUia:$SkipUia -SkipOcr:$SkipOcr -SkipTemplate:$SkipTemplate `
         -SkipVision:$SkipVision -ForceVision:$ForceVision `
-        -OutputDir $OutputDir -TemplateDir $TemplateDir -NoAnnotate:$NoAnnotate
+        -OutputDir $PercOutputDir -TemplateDir $TemplateDir -NoAnnotate:$NoAnnotate
 
     # Invoke-PerceptionPipeline outputs: JSON status string, then PSCustomObject status
     if ($output -is [array] -and $output.Count -ge 2) {

@@ -15,11 +15,11 @@
 #               -ExpectedOutcome @{ visual_change = "menu opens"; ocr_check = "New, Open" }
 
 param(
-    [string]$Before = "",
-    [string]$After = "",
-    [hashtable]$ExpectedOutcome = @{},
-    [string]$OcrText = "",
-    [string]$OutputDir = "$env:TEMP"
+    [string]$SemverBefore = "",
+    [string]$SemverAfter = "",
+    [hashtable]$SemverExpectedOutcome = @{},
+    [string]$SemverOcrText = "",
+    [string]$SemverOutputDir = "$env:TEMP"
 )
 
 # =============================================================================
@@ -247,8 +247,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         exit 1
     }
 
-    $result = Invoke-SemanticVerification -BeforeScreenshot $Before -AfterScreenshot $After `
-        -ExpectedOutcome $ExpectedOutcome -OcrText $OcrText -OutputDir $OutputDir
+    $result = Invoke-SemanticVerification -BeforeScreenshot $SemverBefore -AfterScreenshot $SemverAfter `
+        -ExpectedOutcome $SemverExpectedOutcome -OcrText $SemverOcrText -OutputDir $SemverOutputDir
 
     if ($result -is [string]) {
         # Direct verdict (DryRun or error)

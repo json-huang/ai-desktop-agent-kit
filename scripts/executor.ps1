@@ -15,7 +15,8 @@ param(
     [string]$execOutputDir = "$env:USERPROFILE\Desktop\agent_output",
     [int]$execMaxRetries = 3,
     [int]$execStepTimeout = 30,
-    [switch]$execDryRun                      # Simulate execution (no real clicks/keys)
+    [switch]$execDryRun,                     # Simulate execution (no real clicks/keys)
+    [switch]$execBatch                       # Batch mode: skip SENSE between independent steps
 )
 
 # =============================================================================
@@ -56,7 +57,8 @@ $script:WaitAfterAction = @{
 function Invoke-ActionDispatch {
     param(
         $Action,
-        [switch]$DryRun
+        [switch]$DryRun,
+        [switch]$Batch
     )
 
     if ($DryRun) {
@@ -245,7 +247,8 @@ function Invoke-ExecutorLoop {
         [string]$OutputDir,
         [int]$MaxRetriesPerStep,
         [int]$StepTimeoutSeconds,
-        [switch]$DryRun
+        [switch]$DryRun,
+        [switch]$Batch
     )
 
     # ---- Verify all required scripts exist ----
@@ -832,7 +835,20 @@ function Invoke-ExecutorLoop {
                     if (-not $allDepsMet) {
                         $state = [ExecutorState]::ESCALATE
                     } else {
-                        $state = [ExecutorState]::SENSE
+                        # Batch optimization: skip SENSE if next step is independent
+                        # (no depends_on) and we have valid perception data
+                        if ($Batch -and $lastPerceptionJson -and (Test-Path $lastPerceptionJson) -and $lastScreenshot) {
+                            $nextDepends = $nextStep.depends_on
+                            $isIndependent = (-not $nextDepends) -or ($nextDepends.Count -eq 0)
+                            if ($isIndependent) {
+                                Write-Output "EXECUTOR|ADVANCE|batch: skipping SENSE for independent step $($nextStep.step_id)"
+                                $state = [ExecutorState]::PLAN
+                            } else {
+                                $state = [ExecutorState]::SENSE
+                            }
+                        } else {
+                            $state = [ExecutorState]::SENSE
+                        }
                     }
                 }
             }
@@ -918,7 +934,7 @@ function Invoke-ExecutorLoop {
 if ($MyInvocation.InvocationName -ne '.') {
     $result = Invoke-ExecutorLoop -DagPath $execDagPath -Goal $execGoal -ApplicationHint $execApplicationHint `
         -OutputDir $execOutputDir -MaxRetriesPerStep $execMaxRetries `
-        -StepTimeoutSeconds $execStepTimeout -DryRun:$execDryRun
+        -StepTimeoutSeconds $execStepTimeout -DryRun:$execDryRun -Batch:$execBatch
 
     if ($result.task_completed) {
         Write-Output "EXECUTOR_COMPLETE|$($result.steps_completed)/$($result.steps_total) steps|task_id=$($result.task_id)"

@@ -723,14 +723,35 @@ function Invoke-ExecutorLoop {
                                 }
                             }
                             default {
-                                # Phase 03: relaxed threshold fallback when semantic verification unavailable
-                                # If the original multi-modal score was >= 0.45, treat as SUCCESS
-                                # rather than escalating (useful for local testing without Claude API key)
-                                if ($script:verifyTotalScore -ge 0.45) {
-                                    Write-Output "EXECUTOR|VERIFY|SEMVER→UNCERTAIN|score=$script:verifyTotalScore>=0.45|auto-advancing (no Claude API)"
+                                # Phase 04: smart SEMVER fallback
+                                $hasExplicitCheck = $expectedOutcome.ocr_check -or $expectedOutcome.ui_state
+                                if (-not $hasExplicitCheck -and $script:verifyTotalScore -ge 0.45) {
+                                    # No specific checks requested, score OK → auto-advance
+                                    Write-Output "EXECUTOR|VERIFY|SEMVER→ADVANCE|no explicit checks|score=$script:verifyTotalScore"
                                     $state = [ExecutorState]::ADVANCE
+                                } elseif ($script:verifyTotalScore -gt 0.55) {
+                                    # High confidence despite explicit check → auto-advance
+                                    Write-Output "EXECUTOR|VERIFY|SEMVER→ADVANCE|high confidence|score=$script:verifyTotalScore"
+                                    $state = [ExecutorState]::ADVANCE
+                                } elseif ($hasExplicitCheck -and $retryCount -lt $MaxRetriesPerStep) {
+                                    # Explicit check failed, Claude unavailable, retries remain → retry with strategy switch
+                                    $retryCount++
+                                    # Check for loop before recovering
+                                    $isLoop = Test-LoopBreaker -CurrentAction $lastAction -LastAction $lastAction `
+                                        -CurrentScreenshot $afterScreenshot -LastScreenshot $lastScreenshot
+                                    if ($isLoop) {
+                                        $strategyIndex++
+                                        Write-Output "EXECUTOR|VERIFY|SEMVER→RECOVER|loop detected|strategy=$strategyIndex|retry=$retryCount"
+                                    } else {
+                                        Write-Output "EXECUTOR|VERIFY|SEMVER→RECOVER|explicit check failed|retry=$retryCount/$MaxRetriesPerStep"
+                                    }
+                                    $state = [ExecutorState]::RECOVER
+                                } elseif ($hasExplicitCheck) {
+                                    # Retries exhausted → escalate
+                                    Write-Output "EXECUTOR|VERIFY|SEMVER→ESCALATE|retries exhausted|score=$script:verifyTotalScore"
+                                    $state = [ExecutorState]::ESCALATE
                                 } else {
-                                    Write-Output "EXECUTOR|VERIFY|SEMVER→UNCERTAIN|escalating for human judgment"
+                                    Write-Output "EXECUTOR|VERIFY|SEMVER→ESCALATE|low confidence|score=$script:verifyTotalScore"
                                     $state = [ExecutorState]::ESCALATE
                                 }
                             }

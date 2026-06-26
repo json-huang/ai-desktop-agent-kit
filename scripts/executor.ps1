@@ -237,6 +237,47 @@ function Save-Checkpoint {
 }
 
 # =============================================================================
+# HELPER: Save-TaskMemory (cross-session context persistence)
+# Writes task result to claude-mem project memory for cross-session recall
+# =============================================================================
+function Save-TaskMemory {
+    param(
+        [string]$TaskId,
+        [string]$Goal,
+        [int]$StepsCompleted,
+        [int]$StepsTotal,
+        [string]$FinalState,
+        [string]$OutputDir,
+        [double]$DurationSec = 0
+    )
+
+    Write-Host "SAVE_MEMORY|task=$TaskId|state=$FinalState|steps=$StepsCompleted/$StepsTotal"
+    $memoryDir = Join-Path $env:USERPROFILE ".claude\projects\C--Users-DBA126-AppData-Roaming-npm\memory"
+    if (-not (Test-Path $memoryDir)) {
+        # Memory system not configured, skip
+        return
+    }
+
+    $historyFile = Join-Path $memoryDir "task-history.md"
+
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $statusIcon = if ($FinalState -eq "DONE") { "🟢" } else { "🔴" }
+
+    $entry = @"
+
+| $timestamp | $TaskId | $Goal | $StepsCompleted/$StepsTotal | $statusIcon $FinalState | ${DurationSec}s |
+"@
+
+    try {
+        Add-Content -Path $historyFile -Value $entry -Encoding UTF8
+        Write-Output "EXECUTOR|MEMORY|saved to $(Split-Path $historyFile -Leaf)"
+    }
+    catch {
+        Write-Warning "EXECUTOR|MEMORY|failed to save: $_"
+    }
+}
+
+# =============================================================================
 # MAIN: FSM Execution Loop
 # =============================================================================
 function Invoke-ExecutorLoop {
@@ -282,6 +323,7 @@ function Invoke-ExecutorLoop {
     }
 
     # ---- Setup ----
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $taskId = [Guid]::NewGuid().ToString()
 
     # ---- Validate output directory ----
@@ -895,6 +937,7 @@ function Invoke-ExecutorLoop {
                     -LastAction $lastAction -LastScreenshot $lastScreenshot `
                     -LastPerceptionJson $lastPerceptionJson -OutputDir $OutputDir
 
+                # Save failure memory
                 break
             }
 
@@ -935,6 +978,11 @@ if ($MyInvocation.InvocationName -ne '.') {
     $result = Invoke-ExecutorLoop -DagPath $execDagPath -Goal $execGoal -ApplicationHint $execApplicationHint `
         -OutputDir $execOutputDir -MaxRetriesPerStep $execMaxRetries `
         -StepTimeoutSeconds $execStepTimeout -DryRun:$execDryRun -Batch:$execBatch
+
+    # Save to cross-session memory
+    Save-TaskMemory -TaskId $result.task_id -Goal $(if ($execGoal) { $execGoal } else { "DAG: $execDagPath" }) `
+        -StepsCompleted $result.steps_completed -StepsTotal $result.steps_total `
+        -FinalState $result.final_state -OutputDir $result.output_dir -DurationSec 0
 
     if ($result.task_completed) {
         Write-Output "EXECUTOR_COMPLETE|$($result.steps_completed)/$($result.steps_total) steps|task_id=$($result.task_id)"
